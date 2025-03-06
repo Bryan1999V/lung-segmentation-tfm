@@ -1,10 +1,11 @@
 """Implement the Pytorch basic functionalities for neural networks."""
 
+import logging
+
 import torch
-from matplotlib import pyplot
+from matplotlib import pyplot as plt
 from torch import nn
 from torch.utils import data
-import logging
 
 log = logging.getLogger(__name__)
 
@@ -12,7 +13,12 @@ log = logging.getLogger(__name__)
 class SimpleClassifier(nn.Module):
     """Model with an input layer, a hidden layer with tanh as activation function and an output layer."""
 
-    def __init__(self, n_neurons_input_layer: int, n_neurons_hidden_layer: int, n_neurons_output_layer: int) -> None:
+    def __init__(
+        self,
+        n_neurons_input_layer: int,
+        n_neurons_hidden_layer: int,
+        n_neurons_output_layer: int,
+    ) -> None:
         """
         Initialize the modules with the given parameter values.
 
@@ -61,7 +67,7 @@ class XORDataset(data.Dataset):
 
     def __len__(self) -> int:
         """
-        Number of the generated data points.
+        Return the number of the data points.
 
         :return: length of the generated data.
         """
@@ -108,14 +114,14 @@ class XORDataset(data.Dataset):
         data_0 = data[label == 0]
         data_1 = data[label == 1]
 
-        pyplot.figure(figsize=(4, 4))
-        pyplot.scatter(data_0[:, 0], data_0[:, 1], edgecolors="#333", label="Class 0")
-        pyplot.scatter(data_1[:, 0], data_1[:, 1], edgecolors="#333", label="Class 1")
-        pyplot.title("XOR Dataset samples")
-        pyplot.ylabel(r"$x_2$")
-        pyplot.ylabel(r"$x_1$")
-        pyplot.legend()
-        pyplot.show()
+        plt.figure(figsize=(4, 4))
+        plt.scatter(data_0[:, 0], data_0[:, 1], edgecolors="#333", label="Class 0")
+        plt.scatter(data_1[:, 0], data_1[:, 1], edgecolors="#333", label="Class 1")
+        plt.title("XOR Dataset samples")
+        plt.ylabel(r"$x_2$")
+        plt.ylabel(r"$x_1$")
+        plt.legend()
+        plt.show()
 
 
 def basic_tensor_operations() -> None:
@@ -216,10 +222,89 @@ def create_dataloader() -> None:
     log.debug(f"Data labels for first batch ({labels.size()}):\n{labels}")
 
 
+def train_model(model: SimpleClassifier, n_epochs: int) -> None:
+    """
+    Train the SimpleClassifier model with the XOR dataset.
+
+    For this training session, the optimizer is a Stochastic Gradient Descent with a learning rate of 0.1 and the loss
+    function is Binary Cross Entropy with Logits. The workflow is:
+
+    1. Create a DataLoader object with a batch size of 125.
+    3. Define the optimizer with the model parameters and the learning rate.
+    4. Iterate over the number of epochs and the DataLoader object.
+    5. Calculate the predictions with the model and the input data.
+    6. Calculate the loss value with the predictions and the ground-truth values.
+    7. Reset the optimizer gradients to zero.
+    8. Calculate the gradients with the loss value.
+    9. Update the model parameters with the optimizer.
+
+    :param model: SimpleClassifier model to train.
+    :param n_epochs: number of epochs to train the model.
+    """
+    log.debug("Train the SimpleClassifier model with the XOR dataset.")
+    train_dataset = XORDataset(len_data=2500, standard_deviation=0.1)
+    train_dataloader = data.DataLoader(dataset=train_dataset, batch_size=125, shuffle=True)
+
+    model.train()
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    loss_module = nn.BCEWithLogitsLoss()
+
+    for epoch in torch.arange(n_epochs):
+        log.debug(f"Epoch {epoch + 1}/{n_epochs}")
+
+        for inputs, gt in train_dataloader:
+            preds = model(inputs)
+            preds = preds.squeeze(dim=1)
+
+            loss = loss_module(preds, gt.float())
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        log.debug(f"\tLoss value: {loss.item()}")
+
+    log.debug(f"Model info:\n{model.state_dict()}")
+
+
+def eval_model(model: SimpleClassifier) -> None:
+    """
+    Evaluate the SimpleClassifier model with the XOR dataset.
+
+    For this evaluation session, a Sigmoid function is applied to the predictions given by the model using a new
+    dataset. Then, the true predictions and the total number of predictions are calculated to estimate the accuracy of
+    the model.
+
+    :param model: SimpleClassifier model to evaluate.
+    """
+    sigmoid_threshold = 0.5
+    true_preds = 0
+    num_preds = 0
+    eval_dataset = XORDataset(len_data=500, standard_deviation=0.1)
+    eval_dataloader = data.DataLoader(dataset=eval_dataset, batch_size=125, shuffle=False, drop_last=False)
+
+    model.eval()
+
+    with torch.no_grad():
+        for inputs, labels in eval_dataloader:
+            preds = model(inputs)
+            preds = preds.squeeze(dim=1)
+            preds = torch.sigmoid(preds)
+            pred_labels = (preds >= sigmoid_threshold).long()
+
+            true_preds += (pred_labels == labels).sum()
+            num_preds += labels.shape[0]
+
+        accuracy = true_preds / num_preds
+        log.debug(f"Accuracy of the model: {100.0 * accuracy:4.2f}%")
+
+
 def basic_features() -> None:
     """Show the general information about Pytorch."""
     log.debug(f"Pytorch version: {torch.__version__}")
+    log.debug(f"Cuda avaliable: {torch.cuda.is_available()}")
 
-    # show_simple_classifier_module_info()
-    # show_dataset_info()
-    create_dataloader()
+    model = SimpleClassifier(2, 4, 1)
+    train_model(model=model, n_epochs=100)
+    eval_model(model=model)
