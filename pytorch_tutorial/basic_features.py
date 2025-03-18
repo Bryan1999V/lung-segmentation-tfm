@@ -9,6 +9,8 @@ from torch.utils import data
 
 log = logging.getLogger(__name__)
 
+device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
 
 class SimpleClassifier(nn.Module):
     """Model with an input layer, a hidden layer with tanh as activation function and an output layer."""
@@ -143,7 +145,7 @@ def basic_tensor_operations() -> None:
 
     log.debug(
         "Tensor object with random values sampled from a normal distribution with mean 0, variance 1 and (4, 3, 4) "
-        "dimensions:"
+        "dimensions:",
     )
     log.debug(f"\n{torch.randn(size=(4, 3, 4))}")
 
@@ -253,11 +255,14 @@ def train_model(model: SimpleClassifier, n_epochs: int) -> None:
     for epoch in torch.arange(n_epochs):
         log.debug(f"Epoch {epoch + 1}/{n_epochs}")
 
-        for inputs, gt in train_dataloader:
-            preds = model(inputs)
+        for inputs, gts in train_dataloader:
+            gpu_inputs = inputs.to(device)
+            gpu_gts = gts.to(device)
+
+            preds = model(gpu_inputs)
             preds = preds.squeeze(dim=1)
 
-            loss = loss_module(preds, gt.float())
+            loss = loss_module(preds, gpu_gts.float())
 
             optimizer.zero_grad()
             loss.backward()
@@ -288,13 +293,16 @@ def eval_model(model: SimpleClassifier) -> None:
 
     with torch.no_grad():
         for inputs, labels in eval_dataloader:
-            preds = model(inputs)
+            gpu_inputs = inputs.to(device)
+            gpu_labels = labels.to(device)
+
+            preds = model(gpu_inputs)
             preds = preds.squeeze(dim=1)
             preds = torch.sigmoid(preds)
             pred_labels = (preds >= sigmoid_threshold).long()
 
-            true_preds += (pred_labels == labels).sum()
-            num_preds += labels.shape[0]
+            true_preds += (pred_labels == gpu_labels).sum()
+            num_preds += gpu_labels.shape[0]
 
         accuracy = true_preds / num_preds
         log.debug(f"Accuracy of the model: {100.0 * accuracy:4.2f}%")
@@ -306,5 +314,7 @@ def basic_features() -> None:
     log.debug(f"Cuda avaliable: {torch.cuda.is_available()}")
 
     model = SimpleClassifier(2, 4, 1)
+    model.to(device)
+
     train_model(model=model, n_epochs=100)
     eval_model(model=model)

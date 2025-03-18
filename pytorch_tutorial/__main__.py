@@ -1,6 +1,7 @@
 """Main script for the Pytorch module."""
 
 import logging
+
 import torch
 
 from .basic_features import basic_features
@@ -14,11 +15,12 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 # Set seed number
-torch.manual_seed(DEFAULT_RANDOM_SEED_GENERATOR)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(DEFAULT_RANDOM_SEED_GENERATOR)
 
 
 def main() -> None:
-    """Main function of the Pytorch tutorial module."""
+    """Run the main application of the Pytorch tutorial module."""
     logging.basicConfig(level=logging.DEBUG, format=DEFAULT_LOG_FORMAT, datefmt=DEFAULT_LOG_DATE_FORMAT)
     basic_features()
 
