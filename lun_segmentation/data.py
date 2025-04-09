@@ -56,20 +56,26 @@ class CTLungDataset(Dataset):
         if not Path(data_path).exists():
             msg = f"<{data_path}> directory does not exist!"
             raise NotADirectoryError(msg)
-        self._data_files = sorted(Path(data_path).rglob("*"), key=lambda x: x.stem)
+        self._data_files = sorted(Path(data_path).rglob("*"), key=lambda p: p.stem)
 
         if masks_path:
             if not Path(masks_path).exists():
                 msg = f"<{masks_path}> directory does not exist!"
                 raise NotADirectoryError(msg)
 
-            self._masks_files = sorted(Path(masks_path).rglob("*"), key=lambda x: x.stem)
+            self._masks_files = sorted(Path(masks_path).rglob("*"), key=lambda p: p.stem)
             if len(self._masks_files) != len(self._data_files):
                 msg = (
                     f"The number of masks <{len(self._masks_files)}> does not match with the number of data "
                     f"<{len(self._data_files)}>!"
                 )
                 raise NumberMaskError(msg)
+
+            assert all(
+                self._data_files[i].stem
+                == f"{self._masks_files[i].stem.split('mask_')[0]}{self._masks_files[i].stem.split('mask_')[1]}"
+                for i in range(len(self._masks_files))
+            ), f"The masks files <{self._masks_files}> do not match with the data files <{self._data_files}>!"
 
     def __len__(self) -> None:
         """Get the total number of files found on the given path."""
@@ -182,14 +188,16 @@ def plot_images_and_masks_overlapped(dataloader: DataLoader, mask_opacity: int =
     :param mask_opacity: opacity value for the mask. Default value is 0.5.
     """
     imgs_data, masks_data = next(iter(dataloader))
-    plt.figure(figsize=(20, 20))
+    print(f"Images shape: {imgs_data.shape}")
+    print(f"Masks shape: {masks_data.shape}")
+    plt.figure(figsize=(10, 10))
     n_columns = min(MAX_NUM_COLUMN, dataloader.batch_size)
     n_rows = math.ceil(dataloader.batch_size / n_columns)
 
     for i in range(dataloader.batch_size):
         plt.subplot(n_rows, n_columns, i + 1)
         plt.imshow(imgs_data[i].permute(1, 2, 0).cpu().numpy(), cmap="gray")
-        plt.imshow(masks_data[i].permute(1, 2, 0).cpu().numpy(), alpha=mask_opacity)
+        plt.imshow(masks_data[i].permute(1, 2, 0).cpu().numpy(), cmap="gray", alpha=mask_opacity)
         plt.axis("off")
 
     plt.tight_layout()

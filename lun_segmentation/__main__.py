@@ -1,26 +1,32 @@
 """."""
 
-from lun_segmentation import data
+from torch import optim
+from torch.utils.data import DataLoader
 
-BATCH_SIZE = 10
+from lun_segmentation import data, train
+from unet import model
 
-TRAIN_PATH = "/root/data/images"
-TRAIN_MASKS_PATH = "/root/data/masks"
-TRAIN_SPLIT_SIZE = 0.8
+TRAIN_PATH = "/root/data/train"
+TRAIN_MASKS_PATH = "/root/data/train_masks"
+TRAIN_SPLIT_SIZE = 0.8  # 80% training, 20% validation
+
+MASKS_IMAGE_OPACITY = 0.4
+
+N_EPOCHS = 5
+BATCH_SIZE = 5
+LEARNING_RATE = 1e-4
 
 
 if __name__ == "__main__":
-    application_dataset = data.CTLungDataset(TRAIN_PATH, TRAIN_MASKS_PATH)
-    train_dataset, val_dataset = data.train_val_split(application_dataset, TRAIN_SPLIT_SIZE)
+    full_dataset = data.CTLungDataset(TRAIN_PATH, TRAIN_MASKS_PATH)
+    data.plot_images_and_masks_overlapped(data.get_dataloader(full_dataset, BATCH_SIZE), MASKS_IMAGE_OPACITY)
 
-    print(f"Train dataset size: {len(train_dataset)}")
-    print(f"Validation dataset size: {len(val_dataset)}")
-
-    train_dataloader = data.get_dataloader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_dataloader = data.get_dataloader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-    imgs_data, masks_data = next(iter(train_dataloader))
-    print(f"Images data shape: {imgs_data.shape}")
-    print(f"Masks data shape: {masks_data.shape}")
-
-    data.plot_images_and_masks_overlapped(train_dataloader, mask_opacity=0.3)
+    unet_model = model.UNet(in_channels=1, n_classes=1)
+    train.train(
+        unet_model,
+        optimizer=optim.Adam(unet_model.parameters(), lr=LEARNING_RATE),
+        n_epochs=N_EPOCHS,
+        batch_size=BATCH_SIZE,
+        dataset=full_dataset,
+        train_split_size=TRAIN_SPLIT_SIZE,
+    )
