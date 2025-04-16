@@ -16,7 +16,7 @@ from torchvision import transforms
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DEFAULT_TRAIN_SPLIT_SIZE = 0.8
-DEFAULT_SHUFFLE_VALUE = True
+DEFAULT_TRAIN_MODE = True
 DEFAULT_OPACITY_VALUE = 0.5
 
 FULL_DATASET_SIZE = 1.0
@@ -58,6 +58,7 @@ class CTLungDataset(Dataset):
             raise NotADirectoryError(msg)
         self._data_files = sorted(Path(data_path).rglob("*"), key=lambda p: p.stem)
 
+        self._masks_files = None
         if masks_path:
             if not Path(masks_path).exists():
                 msg = f"<{masks_path}> directory does not exist!"
@@ -71,7 +72,7 @@ class CTLungDataset(Dataset):
                 )
                 raise NumberMaskError(msg)
 
-            assert all(
+            assert all(  # noqa: S101
                 self._data_files[i].stem
                 == f"{self._masks_files[i].stem.split('mask_')[0]}{self._masks_files[i].stem.split('mask_')[1]}"
                 for i in range(len(self._masks_files))
@@ -153,31 +154,29 @@ class CTLungDataset(Dataset):
         return transforms.ToTensor()(Image.open(filepath))
 
 
-def train_val_split(dataset: CTLungDataset, train_size: float = DEFAULT_TRAIN_SPLIT_SIZE) -> tuple[Subset, Subset]:
-    """
-    Split the given dataset into training and validation datasets.
-
-    :param dataset: dataset to split.
-    :param train_size: size of the training dataset. The value should be between 0.0 and 1.0. The rest will be the size
-        for the validation dataset.
-    :return: tuple containing the training and validation datasets.
-    """
-    num_training_samples = int(train_size * len(dataset))
-    num_val_samples = len(dataset) - num_training_samples
-
-    return random_split(dataset, [num_training_samples, num_val_samples])
-
-
-def get_dataloader(dataset: Dataset, batch_size: int, shuffle: bool = DEFAULT_SHUFFLE_VALUE) -> DataLoader:
+def get_dataloader(
+    dataset: Dataset,
+    batch_size: int,
+    num_workers: int,
+    train_mode: bool = DEFAULT_TRAIN_MODE,
+) -> DataLoader:
     """
     Create a DataLoader based on the given dataset and batch size with shuffled samples by default.
 
     :param dataset: dataset to create the DataLoader from.
     :param batch_size: number of samples in each batch.
-    :param shuffle: whether to shuffle the data or not. True by default.
+    :param num_workers: number of subprocesses to use for data loading.
+    :param train_mode: whether the DataLoader is for training or validation. Default is True (training mode).
     :return: DataLoader object.
     """
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=train_mode,
+        num_workers=num_workers,
+        drop_last=train_mode,
+        pin_memory=True,
+    )
 
 
 def plot_images_and_masks_overlapped(dataloader: DataLoader, mask_opacity: int = DEFAULT_OPACITY_VALUE) -> None:
@@ -188,8 +187,6 @@ def plot_images_and_masks_overlapped(dataloader: DataLoader, mask_opacity: int =
     :param mask_opacity: opacity value for the mask. Default value is 0.5.
     """
     imgs_data, masks_data = next(iter(dataloader))
-    print(f"Images shape: {imgs_data.shape}")
-    print(f"Masks shape: {masks_data.shape}")
     plt.figure(figsize=(10, 10))
     n_columns = min(MAX_NUM_COLUMN, dataloader.batch_size)
     n_rows = math.ceil(dataloader.batch_size / n_columns)

@@ -1,17 +1,18 @@
 """Implementation of the training and validation loop for lung segmentation."""
 
+import numpy as np
 import torch
-from torch.nn import BCEWithLogitsLoss
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-from lun_segmentation import data
+from lun_segmentation import data, metrics
 from unet import model
 
-DEFAULT_EPSILON = 1e-6
-
-DICE_NUMERATOR_FACTOR = 2.0
+USE_DICE_FOR_ACCURACY = True
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+SEED = 42
 
 
 def train(  # noqa: PLR0913
@@ -20,8 +21,9 @@ def train(  # noqa: PLR0913
     n_epochs: int,
     batch_size: int,
     dataset: data.CTLungDataset,
-    train_split_size: float,
-) -> None:
+    val_split_size: float,
+    threshold: float = 0.5,
+) -> dict[str, np.ndarray]:
     """
     Train the model using the given optimizer and number of epochs.
 
@@ -30,57 +32,92 @@ def train(  # noqa: PLR0913
     :param n_epochs: number of epochs to train the model.
     :param batch_size: number of samples in each batch.
     :param dataset: dataset to use for training.
-    :param train_split_size: size of the training dataset. The value should be between 0.0 and 1.0. The rest will be the
-        size for the validation dataset.
+    :param val_split_size: size of the validation dataset. The value should be between 0.0 and 1.0. The rest will be the
+        size for the training dataset.
+    :param threshold: threshold to binarize the predictions.
+    :return: dictionary containing the training and validation loss and accuracy (dice) values for each epoch.
     """
-    train_set, val_set = data.train_val_split(dataset, train_split_size)
-    train_loader = data.get_dataloader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader = data.get_dataloader(val_set, batch_size=batch_size, shuffle=False)
-    loss_module = BCEWithLogitsLoss()
+    best_val_loss = float("inf")
+    history = {
+        "loss": [],
+        "val_loss": [],
+        "accuracy": [],
+        "val_accuracy": [],
+    }
+
+    train_set, val_set = train_test_split(
+        dataset,
+        test_size=val_split_size,  # Proportion of data for validation
+        random_state=SEED,  # Seed for reproducibility
+    )
+    train_loader = data.get_dataloader(train_set, batch_size=batch_size, num_workers=2, train_mode=True)
+    val_loader = data.get_dataloader(val_set, batch_size=batch_size, num_workers=2, train_mode=False)
+    loss_module = metrics.BCEDiceLoss()
 
     model = model.to(DEVICE)
     for epoch in range(n_epochs):
-        model.train()
         epoch_loss = 0.0
-        train_dice_coeff = 0.0
-        train_iou_coeff = 0.0
+        epoch_accuracy = 0.0
+        epoch_val_accuracy = 0.0
+        epoch_val_loss = 0.0
 
+        model.train()
         with tqdm(total=len(train_set), desc=f"Epoch {epoch + 1}/{n_epochs}", unit="batch") as pbar:
-            for batch in train_loader:
-                images = batch[0].to(DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
-                masks = batch[1].to(DEVICE, dtype=torch.float32)
+            for nb, (images, masks) in enumerate(train_loader, start=1):
+                x = images.to(DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
+                y_true = masks.to(DEVICE, dtype=torch.float32)
 
-                pred = model(images)
-                loss = loss_module(pred.squeeze(1), masks.squeeze(1))
-                train_dice_coeff = dice_coefficient(masks, pred, DEFAULT_EPSILON)
-                train_iou_coeff = iou_coefficient(masks, pred, DEFAULT_EPSILON)
                 optimizer.zero_grad()
+                y_pred = model(x)
+                loss = loss_module(y_pred, y_true)
                 loss.backward()
                 optimizer.step()
+                epoch_loss += loss.item() * x.size(0)
 
-                pbar.update(images.shape[0])
-                epoch_loss += loss.item()
+                dice, iou = metrics.calculate_metrics(y_pred, y_true, threshold)
+                epoch_accuracy += (dice if USE_DICE_FOR_ACCURACY else iou) * x.size(0)
 
-                val_loss, val_dice_coeff, val_iou_coeff = evaluate(model, val_loader)
+                val_loss, val_accuracy = evaluate(model, val_loader)
+                epoch_val_loss += val_loss
+                epoch_val_accuracy += val_accuracy
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    torch.save(
+                        model.state_dict(),
+                        "/workspace/lung-segmentation-tfm/resources/models/my_best_model.pth",
+                    )
+
+                pbar.update(x.size(0))
                 pbar.set_postfix(
                     {
-                        "T-Loss": loss.item(),
-                        "T-Dice": train_dice_coeff,
-                        "T-IOU": train_iou_coeff,
-                        "V-Loss": val_loss,
-                        "V-Dice": val_dice_coeff,
-                        "V-IOU": val_iou_coeff,
+                        "T-Loss": epoch_loss / (nb * x.size(0)),
+                        "T-Accuracy": epoch_accuracy / (nb * x.size(0)),
+                        "V-Loss": epoch_val_loss / nb,
+                        "V-Accuracy": epoch_val_accuracy / nb,
                     },
                 )
+                model.train()
 
-        print(f"Epoch {epoch + 1}/{n_epochs} - Loss: {epoch_loss / len(train_loader):.4f}")
+        history["loss"].append(epoch_loss / len(train_loader.dataset))
+        history["val_loss"].append(epoch_val_loss / len(train_loader))
+        history["accuracy"].append(epoch_accuracy / len(train_loader.dataset))
+        history["val_accuracy"].append(epoch_val_accuracy / len(train_loader))
+
+        print(
+            f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {history['loss'][-1]:.4f} - "
+            f"Train accuracy: {history['accuracy'][-1]:.4f} - Val Loss: {history['val_loss'][-1]:.4f} - "
+            f"Val accuracy: {history['val_accuracy'][-1]:.4f}",
+        )
+
+    return history
 
 
 def evaluate(
     model: model.UNet,
     val_loader: data.DataLoader,
-    epsilon: float = DEFAULT_EPSILON,
-) -> tuple[float, float, float]:
+    prediction_threshold: float = 0.5,
+) -> tuple[float, float]:
     """
     Evaluate the model using the given validation DataLoader.
 
@@ -89,46 +126,25 @@ def evaluate(
     :return: tuple containing the validation cost, accuracy, Dice coefficient and IoU.
     """
     model.eval()
-    val_loss = 0
+    val_loss = 0.0
+    total_dice = 0.0
+    total_iou = 0.0
+    loss_module = metrics.BCEDiceLoss()
 
     with torch.no_grad():
-        for batch in val_loader:
-            images = batch[0].to(DEVICE, dtype=torch.float32)
-            masks = batch[1].to(DEVICE, dtype=torch.float32)
+        for images, masks in val_loader:
+            x = images.to(DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
+            y_true = masks.to(DEVICE, dtype=torch.float32)
 
-            pred = model(images)
-            loss = BCEWithLogitsLoss()(pred, masks)
+            y_pred = model(x)
+            loss = loss_module(y_pred, y_true)
+            val_loss += loss.item() * x.size(0)
 
-            val_loss = loss.item()
-            dice_coeff = dice_coefficient(masks, pred, epsilon)
-            iou_coeff = iou_coefficient(masks, pred, epsilon)
+            dice, iou = metrics.calculate_metrics(y_pred, y_true, prediction_threshold)
+            total_dice += dice * x.size(0)
+            total_iou += iou * x.size(0)
 
-    model.train()
-    return val_loss, dice_coeff, iou_coeff
-
-
-def dice_coefficient(y_true: torch.Tensor, y_pred: torch.Tensor, epsilon: float) -> float:
-    """
-    Calculate the Dice coefficient between the true and predicted masks.
-
-    :param y_true: true mask.
-    :param y_pred: predicted mask.
-    :param epsilon: small value to avoid division by zero.
-    :return: Dice coefficient.
-    """
-    intersection = (y_true * y_pred).sum()
-    return ((2.0 * intersection + epsilon) / (y_true.sum() + y_pred.sum() + epsilon)).mean().item()
-
-
-def iou_coefficient(y_true: torch.Tensor, y_pred: torch.Tensor, epsilon: float) -> float:
-    """
-    Calculate the Intersection over Union (IoU) coefficient between the true and predicted masks.
-
-    :param y_true: true mask.
-    :param y_pred: predicted mask.
-    :param epsilon: small value to avoid division by zero.
-    :return: IoU coefficient.
-    """
-    intersection = (y_true * y_pred).sum()
-    union = y_true.sum() + y_pred.sum() - intersection
-    return ((intersection + epsilon) / (union + epsilon)).item()
+    val_accuracy = (
+        total_dice / len(val_loader.dataset) if USE_DICE_FOR_ACCURACY else total_iou / len(val_loader.dataset)
+    )
+    return val_loss / len(val_loader.dataset), val_accuracy
