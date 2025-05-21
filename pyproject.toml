@@ -7,7 +7,7 @@ authors = [{ name = "Bryan1999V", email = "bryanvargasnegrete@gmail.com" }]
 
 [tool.poetry]
 readme = "README.md"
-packages = [{ include = "unet" }]
+packages = [{ include = "unet" }, { include = "lun_segmentation" }]
 
 
 [tool.poetry.dependencies]
@@ -30,7 +30,7 @@ ruff = "0.9.6"
 
 
 [tool.ruff]
-extend = "../workspace-config/pyproject.toml"
+extend = "/root/workspace/workspace-config/pyproject.toml"
 
 
 [build-system]

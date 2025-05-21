@@ -106,3 +106,27 @@ def iou_coefficient(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
     union = y_true.sum() + y_pred.sum() - intersection + DEFAULT_EPSILON
     iou = intersection / union
     return iou.item()
+
+def multiclass_dice_coefficient(preds, targets, epsilon=DEFAULT_EPSILON) -> list[float]:
+    """
+    Calculate the Dice coefficient for each class in a multi-class segmentation task.
+
+    :param preds: predicted masks (logits).
+    :param targets: true masks.
+    :param epsilon: small value to avoid division by zero.
+    :return: list of Dice coefficients for each class.
+    """
+    n_classes = preds.shape[1]
+    preds = torch.argmax(preds, dim=1)  # [B, H, W]
+    dice_scores = []
+
+    for cls in range(n_classes):
+        pred_cls = (preds == cls).float()
+        target_cls = (targets == cls).float()
+
+        intersection = (pred_cls * target_cls).sum()
+        union = pred_cls.sum() + target_cls.sum()
+        dice = (2. * intersection) / (union + epsilon)
+        dice_scores.append(dice.item())
+
+    return dice_scores

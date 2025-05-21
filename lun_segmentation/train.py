@@ -2,10 +2,10 @@
 
 import numpy as np
 import torch
-from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from lun_segmentation import data, metrics
+from lun_segmentation import metrics
 from unet import model
 
 USE_DICE_FOR_ACCURACY = True
@@ -17,24 +17,21 @@ SEED = 42
 
 def train(  # noqa: PLR0913
     model: model.UNet,
-    optimizer: object,
     n_epochs: int,
-    batch_size: int,
-    dataset: data.CTLungDataset,
-    val_split_size: float,
-    threshold: float = 0.5,
+    criterion: object,
+    optimizer: object,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
 ) -> dict[str, np.ndarray]:
     """
     Train the model using the given optimizer and number of epochs.
 
     :param model: model to train.
-    :param optimizer: optimizer to use for training.
     :param n_epochs: number of epochs to train the model.
-    :param batch_size: number of samples in each batch.
-    :param dataset: dataset to use for training.
-    :param val_split_size: size of the validation dataset. The value should be between 0.0 and 1.0. The rest will be the
-        size for the training dataset.
-    :param threshold: threshold to binarize the predictions.
+    :param criterion: loss function to use for training.
+    :param optimizer: optimizer to use for training.
+    :param train_loader: DataLoader containing the training data.
+    :param val_loader: DataLoader containing the validation data.
     :return: dictionary containing the training and validation loss and accuracy (dice) values for each epoch.
     """
     best_val_loss = float("inf")
@@ -45,106 +42,104 @@ def train(  # noqa: PLR0913
         "val_accuracy": [],
     }
 
-    train_set, val_set = train_test_split(
-        dataset,
-        test_size=val_split_size,  # Proportion of data for validation
-        random_state=SEED,  # Seed for reproducibility
-    )
-    train_loader = data.get_dataloader(train_set, batch_size=batch_size, num_workers=2, train_mode=True)
-    val_loader = data.get_dataloader(val_set, batch_size=batch_size, num_workers=2, train_mode=False)
-    loss_module = metrics.BCEDiceLoss()
-
     model = model.to(DEVICE)
     for epoch in range(n_epochs):
-        epoch_loss = 0.0
-        epoch_accuracy = 0.0
-        epoch_val_accuracy = 0.0
-        epoch_val_loss = 0.0
+        train_loss = 0.0
+        total_dice_lung = 0.0
+        total_dice_heart = 0.0
+        total_dice_trachea = 0.0
+        total_dice_mean = 0.0
+
+        count = 1
 
         model.train()
-        with tqdm(total=len(train_set), desc=f"Epoch {epoch + 1}/{n_epochs}", unit="batch") as pbar:
-            for nb, (images, masks) in enumerate(train_loader, start=1):
-                x = images.to(DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
-                y_true = masks.to(DEVICE, dtype=torch.float32)
+        with tqdm(total=len(train_loader.dataset), desc=f"Epoch {epoch + 1}/{n_epochs}", unit="batch") as pbar:
+            for images, masks in train_loader:
+                images = images.to(DEVICE)
+                masks = masks.to(DEVICE)
+
+                outputs = model(images)
+                loss = criterion(outputs, masks)
 
                 optimizer.zero_grad()
-                y_pred = model(x)
-                loss = loss_module(y_pred, y_true)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item() * x.size(0)
 
-                dice, iou = metrics.calculate_metrics(y_pred, y_true, threshold)
-                epoch_accuracy += (dice if USE_DICE_FOR_ACCURACY else iou) * x.size(0)
+                train_loss += loss.item()
 
-                val_loss, val_accuracy = evaluate(model, val_loader)
-                epoch_val_loss += val_loss
-                epoch_val_accuracy += val_accuracy
+                _, dice_trachea, dice_heart, dice_lung = metrics.multiclass_dice_coefficient(outputs, masks)
+                total_dice_trachea += dice_trachea
+                total_dice_heart += dice_heart
+                total_dice_lung += dice_lung
+                total_dice_mean += (dice_trachea + dice_heart + dice_lung) / 3
+                count += 1
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    torch.save(
-                        model.state_dict(),
-                        "/workspace/lung-segmentation-tfm/resources/models/my_best_model.pth",
-                    )
-
-                pbar.update(x.size(0))
+                pbar.update(images.size(0))
                 pbar.set_postfix(
                     {
-                        "T-Loss": epoch_loss / (nb * x.size(0)),
-                        "T-Accuracy": epoch_accuracy / (nb * x.size(0)),
-                        "V-Loss": epoch_val_loss / nb,
-                        "V-Accuracy": epoch_val_accuracy / nb,
+                        "Train Loss": train_loss / count,
+                        "Dice Trachea": total_dice_trachea / count,
+                        "Dice Heart": total_dice_heart / count,
+                        "Dice Lung": total_dice_lung / count,
+                        "Dice Mean": total_dice_mean / count,
                     },
                 )
-                model.train()
 
-        history["loss"].append(epoch_loss / len(train_loader.dataset))
-        history["val_loss"].append(epoch_val_loss / len(train_loader))
-        history["accuracy"].append(epoch_accuracy / len(train_loader.dataset))
-        history["val_accuracy"].append(epoch_val_accuracy / len(train_loader))
+        val_loss, val_dice = evaluate(model, val_loader, criterion)
+        val_dice_mean = sum(val_dice[1:]) / len(val_dice[1:])
 
-        print(
-            f"Epoch {epoch + 1}/{n_epochs} - Train Loss: {history['loss'][-1]:.4f} - "
-            f"Train accuracy: {history['accuracy'][-1]:.4f} - Val Loss: {history['val_loss'][-1]:.4f} - "
-            f"Val accuracy: {history['val_accuracy'][-1]:.4f}",
-        )
+        print(f"Validation Loss: {val_loss:.4f} - Validation Accuracy: {val_dice_mean:.4f}")
+        print(f"Validation Dice Coefficients - Lung: {val_dice[3]:.4f}, Heart: {val_dice[2]:.4f}, Trachea: {val_dice[1]:.4f}")
+        print(f"-" * 30)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(
+                model.state_dict(),
+                "/root/models/best_unet_model_bryan.pth",
+            )
+
+        history["loss"].append(train_loss / len(train_loader))
+        history["val_loss"].append(val_loss)
+        history["accuracy"].append(total_dice_mean / len(train_loader))
+        history["val_accuracy"].append(val_dice_mean)
 
     return history
 
 
 def evaluate(
     model: model.UNet,
-    val_loader: data.DataLoader,
-    prediction_threshold: float = 0.5,
+    val_loader: DataLoader,
+    criterion: object,
 ) -> tuple[float, float]:
     """
     Evaluate the model using the given validation DataLoader.
 
     :param model: model to evaluate.
     :param val_loader: DataLoader containing the validation data.
+    :param criterion: loss function to use for evaluation.
     :return: tuple containing the validation cost, accuracy, Dice coefficient and IoU.
     """
     model.eval()
-    val_loss = 0.0
-    total_dice = 0.0
-    total_iou = 0.0
-    loss_module = metrics.BCEDiceLoss()
+    total_loss = 0.0
+    total_dice = [0.0, 0.0, 0.0, 0.0]
+    count = 0
 
     with torch.no_grad():
         for images, masks in val_loader:
-            x = images.to(DEVICE, dtype=torch.float32, memory_format=torch.channels_last)
-            y_true = masks.to(DEVICE, dtype=torch.float32)
+            images = images.to(DEVICE)
+            masks = masks.to(DEVICE)
 
-            y_pred = model(x)
-            loss = loss_module(y_pred, y_true)
-            val_loss += loss.item() * x.size(0)
+            outputs = model(images)
+            loss = criterion(outputs, masks)
 
-            dice, iou = metrics.calculate_metrics(y_pred, y_true, prediction_threshold)
-            total_dice += dice * x.size(0)
-            total_iou += iou * x.size(0)
+            dice_scores = metrics.multiclass_dice_coefficient(outputs, masks)
+            total_loss += loss.item()
+            for i in range(outputs.shape[1]):
+                total_dice[i] += dice_scores[i]
+            count += 1
 
-    val_accuracy = (
-        total_dice / len(val_loader.dataset) if USE_DICE_FOR_ACCURACY else total_iou / len(val_loader.dataset)
-    )
-    return val_loss / len(val_loader.dataset), val_accuracy
+    avg_loss = total_loss / count
+    avg_dice = [d / count for d in total_dice]
+
+    return avg_loss, avg_dice

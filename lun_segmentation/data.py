@@ -2,27 +2,19 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
-
-import nrrd
+import numpy as np
 import pydicom
 import torch
-from matplotlib import pyplot as plt
+from pandas import DataFrame
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset, Subset, random_split
-from torchvision import transforms
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEFAULT_RANDOM_SEED = 42
 
-DEFAULT_TRAIN_SPLIT_SIZE = 0.8
-DEFAULT_TRAIN_MODE = True
-DEFAULT_OPACITY_VALUE = 0.5
-
-FULL_DATASET_SIZE = 1.0
-TWO_DIM_SHAPE = 2
-MAX_PIXEL_NORMALIZED_VALUE = 1.0
-MAX_NUM_COLUMN = 5
+MAX_PIXEL_VALUE = 255.
+PIXEL_THRESHOLD = 200
 
 
 class NumberMaskError(Exception):
@@ -37,165 +29,144 @@ class NumberMaskError(Exception):
         super().__init__(message)
 
 
-class CTLungDataset(Dataset):
+class ChestCTDatasetCsv(Dataset):
     """
-    Create a dataset for chest computed tomography data files based on a given path.
+    Create a dataset for chest computed tomography data files based on the CSV's information.
 
-    For training dataset, the mask
+    Each pixel in the mask data is represented by a different color, and the labels are as follows:
+
+    - 0: background
+    - 1: trachea
+    - 2: heart
+    - 3: lung
     """
 
-    def __init__(self, data_path: str, masks_path: str | None = None) -> None:
+    def __init__(self, images_path: str, masks_path: str,  df: DataFrame) -> None:
         """
         Get the data files, and masks if it is given, based on the given paths.
 
-        :param data_path: path where the data files are located.
+        :param images_path: path where the data files are located.
         :param masks_path: path where the masks files are located (for training and validation process).
+        :param df: dataframe containing the data files and masks from a csv file.
         """
-        super().__init__()
+        self._df = df.reset_index(drop=True)
 
-        if not Path(data_path).exists():
-            msg = f"<{data_path}> directory does not exist!"
+        if not Path(images_path).exists():
+            msg = f"<{images_path}> directory does not exist!"
             raise NotADirectoryError(msg)
-        self._data_files = sorted(Path(data_path).rglob("*"), key=lambda p: p.stem)
+        self._images_path = images_path
 
-        self._masks_files = None
-        if masks_path:
-            if not Path(masks_path).exists():
-                msg = f"<{masks_path}> directory does not exist!"
-                raise NotADirectoryError(msg)
-
-            self._masks_files = sorted(Path(masks_path).rglob("*"), key=lambda p: p.stem)
-            if len(self._masks_files) != len(self._data_files):
-                msg = (
-                    f"The number of masks <{len(self._masks_files)}> does not match with the number of data "
-                    f"<{len(self._data_files)}>!"
-                )
-                raise NumberMaskError(msg)
-
-            assert all(  # noqa: S101
-                self._data_files[i].stem
-                == f"{self._masks_files[i].stem.split('mask_')[0]}{self._masks_files[i].stem.split('mask_')[1]}"
-                for i in range(len(self._masks_files))
-            ), f"The masks files <{self._masks_files}> do not match with the data files <{self._data_files}>!"
+        if not Path(masks_path).exists():
+            msg = f"<{masks_path}> directory does not exist!"
+            raise NotADirectoryError(msg)
+        self._masks_path = masks_path
 
     def __len__(self) -> None:
         """Get the total number of files found on the given path."""
-        return len(self._data_files)
+        return len(self._df)
 
-    def __getitem__(self, index: int) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Retrieve the data and corresponding mask (if available) for the given index.
+        Retrieve the data and corresponding mask for the given index.
 
         :param index: index of the data item to retrieve.
-        :return: tuple containing the data tensor and the mask tensor (if mask path is provided).
+        :return: tuple containing the data tensor and the mask tensor.
         """
-        data = self._get_tensor_data_from_file(self._data_files[index])
-        if self._masks_files:
-            mask = self._get_tensor_data_from_file(self._masks_files[index])
-            return data, mask
+        r_index = 0
+        g_index = 1
+        b_index = 2
 
-        return data
+        img_path = Path(self._images_path) / self._df.loc[index, "ImageId"]
+        mask_path = Path(self._masks_path) / self._df.loc[index, "MaskId"]
 
-    def _get_tensor_data_from_file(self, filepath: Path) -> torch.Tensor:
+        image = Image.open(img_path).convert("L")
+        image = np.array(image, dtype=np.float32) / MAX_PIXEL_VALUE
+        image = torch.tensor(image).unsqueeze(0)
+
+        mask = Image.open(mask_path).convert("RGB")
+        mask = np.array(mask, dtype=np.int64)
+
+        label_mask = np.zeros((mask.shape[0], mask.shape[1]), dtype=np.uint8)
+        red = (mask[:, :, r_index] > PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
+        green = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] > PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
+        blue = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] > PIXEL_THRESHOLD)
+        background = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
+
+        label_mask[background] = 0  # background
+        label_mask[red] = 1         # trachea
+        label_mask[green] = 2       # heart
+        label_mask[blue] = 3        # lung
+
+        mask = torch.tensor(label_mask, dtype=torch.long)
+        return image, mask
+
+class CtLungIldDataset(Dataset):
+    """Create a dataset for chest computed tomography images and masks data stored in dicom files."""
+
+    def __init__(self, database_path: str) -> None:
         """
-        Retrieve the data from the given file and convert it to a tensor.
+        Initialize the dataset with the images and masks path from the given database path.
 
-        :param filepath: path to the file containing the data.
-        :return: data as a tensor object.
+        :param database_path: path where the dicom files are located. The structure of the path should be:
+            <database_path>/
+            ├── <patient_id_1>/
+            │   ├── lung_mask/
+            │   │   ├── lung_mask_<mask_id_1>.dcm
+            │   │   ├── lung_mask_<mask_id_2>.dcm
+            │   ├── CT-<image_id_1>.dcm
+            │   ├── CT-<image_id_2>.dcm
+            ...
         """
-        conversion_file = {
-            ".nrrd": lambda f: self._nrrd_to_tensor(f),
-            ".dcm": lambda f: self._dcm_to_tensor(f),
-            ".jpg": lambda f: self._jpg_png_to_tensor(f),
-            ".png": lambda f: self._jpg_png_to_tensor(f),
-        }
-        return conversion_file[filepath.suffix](filepath)
+        self._images_path = list(Path(database_path).rglob("**/*CT*.dcm"))
+        self._masks_path = list(Path(database_path).rglob("**/lung_mask/lung_mask*.dcm"))
 
-    def _nrrd_to_tensor(self, filepath: Path) -> torch.Tensor:
+        if len(self._images_path) != len(self._masks_path):
+            msg = (
+                f"Number of images <{len(self._images_path)}> does not match with the number of masks "
+                f"<{len(self._masks_path)}>!"
+            )
+            raise NumberMaskError(msg)
+
+    def __len__(self) -> None:
+        """Get the total number of files found on the given path."""
+        return len(self._images_path)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Retrieve the data from the given NRRD file and convert it to a tensor.
+        Retrieve the data and corresponding mask for the given index.
 
-        :param filepath: path to the NRRD file containing the data.
-        :return: data as a tensor object.
+        :param index: index of the data item to retrieve.
+        :return: tuple containing the data tensor and the mask tensor.
         """
-        data, _ = nrrd.read(filepath.as_posix())
-        data_tensor = torch.tensor(data, dtype=torch.float32, device=DEVICE).permute(2, 0, 1)
+        image_path = self._images_path[index]
+        mask_path = self._masks_path[index]
 
-        if data_tensor.max() > MAX_PIXEL_NORMALIZED_VALUE:
-            data_tensor /= data_tensor.max().item()
+        print(f"Image path: {image_path}, Mask path: {mask_path}")
 
-        return data_tensor
+        image = pydicom.dcmread(image_path).pixel_array
+        mask = pydicom.dcmread(mask_path).pixel_array
 
-    def _dcm_to_tensor(self, filepath: Path) -> torch.Tensor:
-        """
-        Retrieve the data from the given DICOM file and convert it to a tensor.
+        print(f"Image shape: {image.shape}, Mask shape: {mask.shape}")
+        print(f"Image unique values: {np.unique(image)}, Mask unique values: {np.unique(mask)}")
 
-        :param filepath: path to the DICOM file containing the data.
-        :return: data as a tensor object.
-        """
-        data = pydicom.dcmread(filepath.as_posix())
-        data_tensor = torch.tensor(data.pixel_array, dtype=torch.float32, device=DEVICE)
+        return image, mask
 
-        if data_tensor.max() > MAX_PIXEL_NORMALIZED_VALUE:
-            data_tensor /= data_tensor.max().item()
-
-        if data_tensor.ndim == TWO_DIM_SHAPE:
-            data_tensor = data_tensor.unsqueeze(dim=0)
-
-        return data_tensor
-
-    def _jpg_png_to_tensor(self, filepath: Path) -> torch.Tensor:
-        """
-        Retrieve the data from the given JPG/PNG file and convert it to a tensor.
-
-        :param filepath: path to the JPG/PNG file containing the data.
-        :return: data as a tensor object.
-        """
-        return transforms.ToTensor()(Image.open(filepath))
-
-
-def get_dataloader(
+def split_dataset(
     dataset: Dataset,
-    batch_size: int,
-    num_workers: int,
-    train_mode: bool = DEFAULT_TRAIN_MODE,
-) -> DataLoader:
+    val_split_size: float,
+    test_split_size: float,
+    seed: int = DEFAULT_RANDOM_SEED
+) -> tuple[Dataset, Dataset, Dataset]:
     """
-    Create a DataLoader based on the given dataset and batch size with shuffled samples by default.
+    Split the complete dataset into training, validation, and test datasets.
 
-    :param dataset: dataset to create the DataLoader from.
-    :param batch_size: number of samples in each batch.
-    :param num_workers: number of subprocesses to use for data loading.
-    :param train_mode: whether the DataLoader is for training or validation. Default is True (training mode).
+    The training dataset will contain the remaining data after splitting the validation and test datasets.
+
+    :param dataset: dataset with every images and masks.
+    :param val_split_size: size of the validation split.
+    :param test_split_size: size of the test split.
     :return: DataLoader object.
     """
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=train_mode,
-        num_workers=num_workers,
-        drop_last=train_mode,
-        pin_memory=True,
-    )
-
-
-def plot_images_and_masks_overlapped(dataloader: DataLoader, mask_opacity: int = DEFAULT_OPACITY_VALUE) -> None:
-    """
-    Plot some images and masks overlapped for each batch of the given DataLoader.
-
-    :param dataloader: DataLoader containing the images and masks to plot.
-    :param mask_opacity: opacity value for the mask. Default value is 0.5.
-    """
-    imgs_data, masks_data = next(iter(dataloader))
-    plt.figure(figsize=(10, 10))
-    n_columns = min(MAX_NUM_COLUMN, dataloader.batch_size)
-    n_rows = math.ceil(dataloader.batch_size / n_columns)
-
-    for i in range(dataloader.batch_size):
-        plt.subplot(n_rows, n_columns, i + 1)
-        plt.imshow(imgs_data[i].permute(1, 2, 0).cpu().numpy(), cmap="gray")
-        plt.imshow(masks_data[i].permute(1, 2, 0).cpu().numpy(), cmap="gray", alpha=mask_opacity)
-        plt.axis("off")
-
-    plt.tight_layout()
-    plt.show()
+    train_dataset, test_dataset = train_test_split(dataset, test_size=test_split_size, random_state=seed)
+    train_dataset, val_dataset = train_test_split(train_dataset, test_size=val_split_size, random_state=seed)
+    return train_dataset, val_dataset, test_dataset
