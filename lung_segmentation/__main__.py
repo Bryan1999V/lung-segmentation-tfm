@@ -4,22 +4,21 @@ import numpy as np
 import torch
 import pandas as pd
 from matplotlib import pyplot as plt
-from torch import nn
 from torch import optim
 from torch.utils.data import DataLoader
 
-from lun_segmentation import data, test, train
+from lung_segmentation import data, test, train, metrics
 from unet import model
 
-CSV_PATH = "/workspace/data/chest_ct_segmentation/train.csv"
+CSV_PATH = "/workspace/data/chest_ct_segmentation/train_filtered.csv"
 IMAGES_PATH = "/workspace/data/chest_ct_segmentation/images/images"
 MASKS_PATH = "/workspace/data/chest_ct_segmentation/masks/masks"
 TEST_SPLIT_SIZE = 0.2
 VAL_SPLIT_SIZE = 0.2
 
 TRAIN_MODEL = False
-N_EPOCHS = 32
-N_WORKERS = 2
+N_EPOCHS = 8
+N_WORKERS = 1
 BATCH_SIZE = 4
 LEARNING_RATE = 1e-4
 RANDOM_SEED = 42
@@ -37,8 +36,8 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=N_WORKERS)
     test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=N_WORKERS)
 
-    criterion = nn.CrossEntropyLoss()
-    unet_model = model.UNet(in_channels=1, n_classes=4)
+    criterion = metrics.BCEDiceLoss()
+    unet_model = model.UNet(in_channels=3, n_classes=1)
     if TRAIN_MODEL:
         history = train.train(
             unet_model,

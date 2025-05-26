@@ -72,32 +72,19 @@ class ChestCTDatasetCsv(Dataset):
         :param index: index of the data item to retrieve.
         :return: tuple containing the data tensor and the mask tensor.
         """
-        r_index = 0
-        g_index = 1
-        b_index = 2
-
+        lung_channel = 2
         img_path = Path(self._images_path) / self._df.loc[index, "ImageId"]
         mask_path = Path(self._masks_path) / self._df.loc[index, "MaskId"]
 
-        image = Image.open(img_path).convert("L")
+        image = Image.open(img_path).convert("RGB")
         image = np.array(image, dtype=np.float32) / MAX_PIXEL_VALUE
-        image = torch.tensor(image).unsqueeze(0)
+        image = torch.tensor(image).permute(2, 0, 1)
 
         mask = Image.open(mask_path).convert("RGB")
         mask = np.array(mask, dtype=np.int64)
+        mask = mask[:, :, lung_channel] / MAX_PIXEL_VALUE
+        mask = torch.tensor(mask, dtype=torch.float).unsqueeze(0)
 
-        label_mask = np.zeros((mask.shape[0], mask.shape[1]), dtype=np.uint8)
-        red = (mask[:, :, r_index] > PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
-        green = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] > PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
-        blue = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] > PIXEL_THRESHOLD)
-        background = (mask[:, :, r_index] < PIXEL_THRESHOLD) & (mask[:, :, g_index] < PIXEL_THRESHOLD) & (mask[:, :, b_index] < PIXEL_THRESHOLD)
-
-        label_mask[background] = 0  # background
-        label_mask[red] = 1         # trachea
-        label_mask[green] = 2       # heart
-        label_mask[blue] = 3        # lung
-
-        mask = torch.tensor(label_mask, dtype=torch.long)
         return image, mask
 
 class CtLungIldDataset(Dataset):

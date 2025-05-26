@@ -7,7 +7,7 @@ authors = [{ name = "Bryan1999V", email = "bryanvargasnegrete@gmail.com" }]
 
 [tool.poetry]
 readme = "README.md"
-packages = [{ include = "unet" }, { include = "lun_segmentation" }]
+packages = [{ include = "unet" }, { include = "lung_segmentation" }]
 
 
 [tool.poetry.dependencies]

@@ -27,13 +27,13 @@ from torch.utils.data import (
 )
 from torchinfo import summary  # Provides model summary similar to Keras
 
-from lun_segmentation import data
+from lung_segmentation import data
 from unet import model
 
 warnings.filterwarnings("ignore")  # Suppresses warning messages
 
 IN_CHANNELS = 3  # Number of input channels (e.g., grayscale images)
-N_CLASSES = 3  # Number of output channels (e.g., binary segmentation)
+N_CLASSES = 1  # Number of output channels (e.g., binary segmentation)
 TRAIN = False
 
 
@@ -138,6 +138,8 @@ class ChestCTDataset(Dataset):
         mask[mask < 240] = 0
         mask[mask >= 240] = 1
 
+        mask = mask[:, :, 0]  # Select the first channel of the mask (binary mask)
+
         # Apply transformations if provided
         if self.transform:
             augmented = self.transform(image=image, mask=mask)  # Apply transformations
@@ -145,7 +147,8 @@ class ChestCTDataset(Dataset):
             mask = augmented['mask']  # Transformed mask
 
         # Change mask dimensions to [channels, height, width] for compatibility with PyTorch
-        mask = mask.permute(2, 0, 1).float()  # Reorder dimensions and convert to float
+        # mask = mask.permute(2, 0, 1).float()  # Reorder dimensions and convert to float
+        mask = mask.unsqueeze(0).float()  # Add a channel dimension and convert to float
 
         return image, mask  # Return the processed image and mask
 
@@ -1001,6 +1004,72 @@ if TRAIN:
     del model_unet_nb  # Delete the U-Net model with transposed convolution to free up memory
     torch.cuda.empty_cache()  # Clear unused cached memory on the GPU
 
+    # Plot the training and validation loss for each model over epochs
+    # Plot losses for every used model
+    plt.figure()
+    fig, axs = plt.subplots(3, 1)
+
+    # EfficientUnet
+    axs[0].plot(train_losses_efficientUnet, label="Training Loss EfficientUnet", marker="o")
+    axs[0].plot(val_losses_efficientUnet, label="Validation Loss EfficientUnet", marker="o")
+    axs[0].set_title("EfficientUnet Loss Over Epochs")
+    axs[0].set_xlabel("Epoch")
+    axs[0].set_ylabel("Loss")
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Custom Unet
+    axs[1].plot(train_losses_unet, label="Training Loss Unet", marker="o")
+    axs[1].plot(val_losses_unet, label="Validation Loss Unet", marker="o")
+    axs[1].set_title("Unet Loss Over Epochs")
+    axs[1].set_xlabel("Epoch")
+    axs[1].set_ylabel("Loss")
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Unet notebook (transposed conv)
+    axs[2].plot(train_losses_unet_nb, label="Training Loss Unet notebook", marker="o")
+    axs[2].plot(val_losses_unet_nb, label="Validation Loss Unet notebook", marker="o")
+    axs[2].set_title("Unet Notebook Loss Over Epochs")
+    axs[2].set_xlabel("Epoch")
+    axs[2].set_ylabel("Loss")
+    axs[2].legend()
+    axs[2].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    # Plot DICE for every used model
+    plt.figure()
+    fig, axs = plt.subplots(3, 1)
+
+    # EfficientUnet
+    axs[0].plot(dice_scores_efficientUnet, label="Validation Dice EfficientUnet", marker="o")
+    axs[0].set_title("EfficientUnet DICE Over Epochs")
+    axs[0].set_xlabel("Epoch")
+    axs[0].set_ylabel("Loss")
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Custom Unet
+    axs[1].plot(dice_scores_unet, label="Validation Dice Unet", marker="o")
+    axs[1].set_title("Unet DICE Over Epochs")
+    axs[1].set_xlabel("Epoch")
+    axs[1].set_ylabel("Loss")
+    axs[1].legend()
+    axs[1].grid(True)
+
+    # Unet notebook (transposed conv)
+    axs[2].plot(dice_scores_unet_nb, label="Validation Dice Unet notebook", marker="o")
+    axs[2].set_title("Unet Notebook DICE Over Epochs")
+    axs[2].set_xlabel("Epoch")
+    axs[2].set_ylabel("Loss")
+    axs[2].legend()
+    axs[2].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
 # Initialize U-Net model with EfficientNet-B2 encoder
 model_efficientUnet = smp.Unet(
     encoder_name="efficientnet-b2",  # Encoder architecture
@@ -1034,137 +1103,51 @@ model_unet_nb.load_state_dict(torch.load("/root/models/best_model_unet_nb.pth"))
 model_unet_nb.eval()  # Set the model to evaluation mode
 
 # Final evaluation on the validation set for the EfficientNet-based U-Net model
-final_val_loss, final_val_dice, final_val_iou = validate_model(model_efficientUnet, val_loader, criterion)
+final_val_loss, final_val_dice, _ = validate_model(model_efficientUnet, val_loader, criterion)
 
 # Print final validation metrics
 print(f"Final Validation Loss EfficientUnet: {final_val_loss:.4f}")
 print(f"Final Validation Dice Coefficient EfficientUnet: {final_val_dice:.4f}")
-print(f"Final Validation Jaccard Index EfficientUnet: {final_val_iou:.4f}")
 print("-" * 30)
 
 # Final evaluation on the validation set for the custom U-Net model
-final_val_loss, final_val_dice, final_val_iou = validate_model(model_unet, val_loader, criterion)
+final_val_loss, final_val_dice, _ = validate_model(model_unet, val_loader, criterion)
 
 # Print final validation metrics
 print(f"Final Validation Loss Unet: {final_val_loss:.4f}")
 print(f"Final Validation Dice Coefficient Unet: {final_val_dice:.4f}")
-print(f"Final Validation Jaccard Index Unet: {final_val_iou:.4f}")
 print("-" * 30)
 
 # Final evaluation on the validation set for the custom U-Net model with transposed convolution (deconv)
-final_val_loss, final_val_dice, final_val_iou = validate_model(model_unet_nb, val_loader, criterion)
+final_val_loss, final_val_dice, _ = validate_model(model_unet_nb, val_loader, criterion)
 
 # Print final validation metrics
 print(f"Final Validation Loss Unet notebook: {final_val_loss:.4f}")
 print(f"Final Validation Dice Coefficient Unet notebook: {final_val_dice:.4f}")
-print(f"Final Validation Jaccard Index Unet notebook: {final_val_iou:.4f}")
 print("-" * 30)
 
-if False:
-    # Plot the training and validation loss for each model over epochs
-    plt.figure(figsize=(10, 5))
-
-    # Plot losses for the EfficientNet-based U-Net model
-    plt.plot(train_losses_efficientUnet, label="Training Loss EfficientUnet", marker="o")
-    plt.plot(val_losses_efficientUnet, label="Validation Loss EfficientUnet", marker="o")
-
-    # Plot losses for the custom U-Net model
-    plt.plot(train_losses_unet, label="Training Loss Unet", marker="o")
-    plt.plot(val_losses_unet, label="Validation Loss Unet", marker="o")
-
-    # Plot losses for the U-Net model with transposed convolution
-    plt.plot(train_losses_unet_nb, label="Training Loss Unet notebook", marker="o")
-    plt.plot(val_losses_unet_nb, label="Validation Loss Unet notebook", marker="o")
-
-    # Add title, labels, legend, and grid
-    plt.title("Training and Validation Loss Over Epochs")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    # plt.savefig(
-    #     f"/workspace/code/lung-segmentation-tfm/resources/models/best_model_efficient_Unet_history.png",
-    #     bbox_inches="tight",
-    # )
-
-    # Plot the Dice Coefficient over epochs for each model
-    plt.figure(figsize=(10, 5))
-    plt.plot(
-        dice_scores_efficientUnet,
-        label="Validation Dice EfficientUnet",
-        color="green",
-        marker="o",
-    )
-    plt.plot(dice_scores_unet, label="Validation Dice Unet", color="blue", marker="o")
-    plt.plot(
-        dice_scores_unet_nb,
-        label="Validation Dice Unet notebook",
-        color="red",
-        marker="o",
-    )
-    plt.title("Validation Dice Coefficient Over Epochs")
-    plt.xlabel("Epoch")
-    plt.ylabel("Dice Coefficient")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    # plt.savefig(
-    #     f"/workspace/code/lung-segmentation-tfm/resources/models/best_model_unet_history.png",
-    #     bbox_inches="tight",
-    # )
-
-    # Plot the Jaccard Index (IoU) over epochs for each model
-    plt.figure(figsize=(10, 5))
-    plt.plot(
-        iou_scores_efficientUnet,
-        label="Validation Jaccard Index EfficientUnet",
-        color="green",
-        marker="o",
-    )
-    plt.plot(iou_scores_unet, label="Validation Jaccard Index Unet", color="blue", marker="o")
-    plt.plot(
-        iou_scores_unet_nb,
-        label="Validation Jaccard Index Unet notebook",
-        color="red",
-        marker="o",
-    )
-    plt.title("Validation Jaccard Index Over Epochs")
-    plt.xlabel("Epoch")
-    plt.ylabel("Jaccard Index (IoU)")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    # plt.savefig(
-    #     f"/workspace/code/lung-segmentation-tfm/resources/models/best_model_unet_nb_history.png",
-    #     bbox_inches="tight",
-    # )
-
 # Final evaluation on the test set for the EfficientNet-based U-Net model
-final_test_loss, final_test_dice, final_test_iou = validate_model(model_efficientUnet, test_loader, criterion)
+final_test_loss, final_test_dice, _ = validate_model(model_efficientUnet, test_loader, criterion)
 
 # Print final test metrics
 print(f"Final Test Loss EfficientUnet: {final_test_loss:.4f}")
 print(f"Final Test Dice Coefficient EfficientUnet: {final_test_dice:.4f}")
-print(f"Final Test Jaccard Index EfficientUnet: {final_test_iou:.4f}")
 print("-" * 30)
 
 # Final evaluation on the test set for the custom U-Net model
-final_test_loss, final_test_dice, final_test_iou = validate_model(model_unet, test_loader, criterion)
+final_test_loss, final_test_dice, _ = validate_model(model_unet, test_loader, criterion)
 
 # Print final test metrics
 print(f"Final Test Loss Unet: {final_test_loss:.4f}")
 print(f"Final Test Dice Coefficient Unet: {final_test_dice:.4f}")
-print(f"Final Test Jaccard Index Unet: {final_test_iou:.4f}")
 print("-" * 30)
 
 # Final evaluation on the test set for the U-Net model with transposed convolution (deconv)
-final_test_loss, final_test_dice, final_test_iou = validate_model(model_unet_nb, test_loader, criterion)
+final_test_loss, final_test_dice, _ = validate_model(model_unet_nb, test_loader, criterion)
 
 # Print final test metrics
 print(f"Final Test Loss Unet notebook: {final_test_loss:.4f}")
 print(f"Final Test Dice Coefficient Unet notebook: {final_test_dice:.4f}")
-print(f"Final Test Jaccard Index Unet notebook: {final_test_iou:.4f}")
 print("-" * 30)
 
 
@@ -1187,15 +1170,18 @@ def visualize_predictions(model, dataset, index, model_name: str):
     image_np = np.clip(image_np, 0, 1)
 
     # If image is grayscale (single channel), convert to 3-channel RGB
-    if image_np.shape[2] == 1:
-        image_np = np.repeat(image_np, 3, axis=2)
+    # if image_np.shape[2] == 1:
+    #     image_np = np.repeat(image_np, 3, axis=2)
 
     # Convert mask tensor to numpy array
     mask_np = mask.cpu().numpy()  # Shape: (C, H, W)
 
     # Ensure mask has three channels for Lung, Heart, Trachea
     if mask_np.shape[0] != 3:
-        raise ValueError(f"Expected mask with 3 channels, but got {mask_np.shape[0]} channels.")
+        cmap_color = "gray"
+
+    else:
+        cmap_color = "rgb"
 
     # Get model prediction
     model.eval()
@@ -1215,7 +1201,7 @@ def visualize_predictions(model, dataset, index, model_name: str):
     gt_overlay = np.zeros_like(image_np)
     pred_overlay = np.zeros_like(image_np)
 
-    for i in range(3):
+    for i in range(1):
         # Ground Truth Mask
         gt_class_mask = mask_np[i] > 0  # Binary mask for class i
         gt_overlay[gt_class_mask] = colors[i]
@@ -1239,17 +1225,17 @@ def visualize_predictions(model, dataset, index, model_name: str):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
     # Original Image
-    axes[0].imshow(image_np)
+    axes[0].imshow(image_np, cmap="gray")
     axes[0].set_title("Original Image")
     axes[0].axis("off")
 
     # Ground Truth Mask Overlay
-    axes[1].imshow(gt_image)
+    axes[1].imshow(gt_image, cmap=cmap_color)
     axes[1].set_title("Ground Truth Mask")
     axes[1].axis("off")
 
     # Predicted Mask Overlay
-    axes[2].imshow(pred_image)
+    axes[2].imshow(pred_image, cmap=cmap_color)
     axes[2].set_title("Predicted Mask")
     axes[2].axis("off")
 
@@ -1294,31 +1280,3 @@ if not TRAIN:
             sample_idx,
             "model_notebook",
         )  # Visualize the model's predictions
-
-
-# Final evaluation on the test set for the EfficientNet-based U-Net model
-final_test_loss, final_test_dice, final_test_iou = validate_model_per_class(model_efficientUnet, test_loader, criterion)
-
-# Print final test metrics
-print(f"Final Test Loss EfficientUnet: {final_test_loss:.4f}")
-print(f"Final Test Dice Coefficient EfficientUnet: {final_test_dice}")
-print(f"Final Test Jaccard Index EfficientUnet: {final_test_iou}")
-print("-" * 30)
-
-# Final evaluation on the test set for the EfficientNet-based U-Net model
-final_test_loss, final_test_dice, final_test_iou = validate_model_per_class(model_unet, test_loader, criterion)
-
-# Print final test metrics
-print(f"Final Test Loss Unet: {final_test_loss:.4f}")
-print(f"Final Test Dice Coefficient Unet: {final_test_dice}")
-print(f"Final Test Jaccard Index Unet: {final_test_iou}")
-print("-" * 30)
-
-# Final evaluation on the test set for the EfficientNet-based U-Net model
-final_test_loss, final_test_dice, final_test_iou = validate_model_per_class(model_unet_nb, test_loader, criterion)
-
-# Print final test metrics
-print(f"Final Test Loss Unet Notebook: {final_test_loss:.4f}")
-print(f"Final Test Dice Coefficient Unet Notebook: {final_test_dice}")
-print(f"Final Test Jaccard Index Unet Notebook: {final_test_iou}")
-print("-" * 30)

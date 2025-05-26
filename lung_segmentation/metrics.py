@@ -80,33 +80,6 @@ def calculate_metrics(outputs: torch.Tensor, targets: torch.Tensor, threshold: f
     return dice.mean().item(), iou.mean().item()
 
 
-def dice_coefficient(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    """
-    Calculate the Dice coefficient between the true and predicted masks.
-
-    :param y_true: true mask.
-    :param y_pred: predicted mask.
-    :return: Dice coefficient.
-    """
-    intersection = (y_true * y_pred).sum()
-    denominator = y_true.sum() + y_pred.sum() + DEFAULT_EPSILON
-    dice = (DICE_NUMERATOR_FACTOR * intersection) / denominator
-    return dice.item()
-
-
-def iou_coefficient(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    """
-    Calculate the Intersection over Union (IoU) coefficient between the true and predicted masks.
-
-    :param y_true: true mask.
-    :param y_pred: predicted mask.
-    :return: IoU coefficient.
-    """
-    intersection = (y_true * y_pred).sum()
-    union = y_true.sum() + y_pred.sum() - intersection + DEFAULT_EPSILON
-    iou = intersection / union
-    return iou.item()
-
 def multiclass_dice_coefficient(preds, targets, epsilon=DEFAULT_EPSILON) -> list[float]:
     """
     Calculate the Dice coefficient for each class in a multi-class segmentation task.
