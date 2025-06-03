@@ -1,5 +1,6 @@
 """."""
 
+import albumentations
 import numpy as np
 import torch
 import pandas as pd
@@ -13,12 +14,13 @@ from unet import model
 CSV_PATH = "/workspace/data/chest_ct_segmentation/train_filtered.csv"
 IMAGES_PATH = "/workspace/data/chest_ct_segmentation/images/images"
 MASKS_PATH = "/workspace/data/chest_ct_segmentation/masks/masks"
+ILD_DB_PATH = "/workspace/data/ILD_DB/ILD_DB_lungMasks"
 TEST_SPLIT_SIZE = 0.2
 VAL_SPLIT_SIZE = 0.2
 
-TRAIN_MODEL = False
-N_EPOCHS = 8
-N_WORKERS = 1
+TRAIN_MODEL = True
+N_EPOCHS = 20
+N_WORKERS = 0
 BATCH_SIZE = 4
 LEARNING_RATE = 1e-4
 RANDOM_SEED = 42
@@ -29,7 +31,10 @@ torch.cuda.manual_seed_all(RANDOM_SEED)
 
 
 if __name__ == "__main__":
-    dataset = data.ChestCTDatasetCsv(IMAGES_PATH, MASKS_PATH, pd.read_csv(CSV_PATH))
+    transform = albumentations.Compose([albumentations.Resize(64, 64), albumentations.ToTensorV2()])
+
+    # dataset = data.ChestCTDatasetCsv(IMAGES_PATH, MASKS_PATH, pd.read_csv(CSV_PATH))
+    dataset = data.CtLungIldDataset(ILD_DB_PATH, transform=transform)
     train_set, val_set, test_set = data.split_dataset(dataset, VAL_SPLIT_SIZE, TEST_SPLIT_SIZE)
 
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=N_WORKERS)
@@ -37,7 +42,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=N_WORKERS)
 
     criterion = metrics.BCEDiceLoss()
-    unet_model = model.UNet(in_channels=3, n_classes=1)
+    unet_model = model.UNet(in_channels=1, n_classes=1)
     if TRAIN_MODEL:
         history = train.train(
             unet_model,
