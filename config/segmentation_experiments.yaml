@@ -1,0 +1,252 @@
+# ======================= Segmentation Experiments =======================
+
+# ==========================================================================
+#                                  2D Models
+# ==========================================================================
+
+unet_2d:
+  Mode: "2D"
+  Encoder_name: efficientnet-b3
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+unet++_2d:
+  Mode: "2D"
+  Encoder_name: se_resnet50
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+nnunet_2d:
+  Mode: "2D"
+  Encoder_name: resnet34  # Ignored by nnUNet (uses self-configuring architecture)
+  Encoder_weights: imagenet  # Ignored by nnUNet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+deeplabv3+_2d:
+  Mode: "2D"
+  Encoder_name: resnet101
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+fpn_2d:
+  Mode: "2D"
+  Encoder_name: efficientnet-b4
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+manet_2d:
+  Mode: "2D"
+  Encoder_name: resnext50_32x4d
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+linknet_2d:
+  Mode: "2D"
+  Encoder_name: mobilenet_v2
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+pspnet_2d:
+  Mode: "2D"
+  Encoder_name: resnet50
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+upernet_2d:
+  Mode: "2D"
+  Encoder_name: se_resnet101
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+# dpt_2d:
+#   Mode: "2D"
+#   Encoder_name: tu-swin_base_patch4_window7_224.ms_in22k_ft_in1k  # Swin Transformer - mejor para DPT
+#   Encoder_weights: imagenet
+#   Batch: 16
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 224
+#   Workers: 4
+
+segformer_2d:
+  Mode: "2D"
+  Encoder_name: mit_b3
+  Encoder_weights: imagenet
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+# Only supports resnet50 or resnet101 backbones
+fcn_2d:
+  Mode: "2D"
+  Encoder_name: resnet101
+  Encoder_weights: imagenet  # Ignored - uses COCO weights
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 64
+  Workers: 4
+
+swin_unetr_2d:
+  Mode: "2D"
+  Encoder_name: ""  # SwinUNETR doesn't use encoder_name
+  Encoder_weights: ""  # SwinUNETR doesn't use encoder_weights
+  Batch: 16
+  Epochs: 100
+  LR: 0.001
+  Pixel_size: 224
+  Workers: 4
+
+# ==========================================================================
+#                                  3D Models
+# ==========================================================================
+
+# # Native MONAI implementations
+# unet_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: imagenet  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96  # 96x96x96 patches
+#   Workers: 2
+
+# vnet_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: None  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# swinunetr_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: None  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 2  # Smaller batch due to memory requirements
+#   Epochs: 100
+#   LR: 0.0001
+#   Pixel_size: 96
+#   Workers: 2
+
+# attentionunet_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: None  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# segresnet_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: None  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# dynunet_3d:
+#   Mode: "3D"
+#   Encoder_name: None  # 3D MONAI models typically don't have a separate encoder
+#   Encoder_weights: None  # 3D MONAI models typically don't have pretrained weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# # Models from segmentation-models-pytorch-3d (with encoder support)
+# manet_3d:
+#   Mode: "3D"
+#   Encoder_name: "resnet50"
+#   Encoder_weights: imagenet  # 3D models typically don't have imagenet weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# linknet_3d:
+#   Mode: "3D"
+#   Encoder_name: "resnet34"
+#   Encoder_weights: imagenet  # 3D models typically don't have imagenet weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# fpn_3d:
+#   Mode: "3D"
+#   Encoder_name: "resnet50"
+#   Encoder_weights: imagenet  # 3D models typically don't have imagenet weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# pspnet_3d:
+#   Mode: "3D"
+#   Encoder_name: "resnet50"
+#   Encoder_weights: imagenet  # 3D models typically don't have imagenet weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
+
+# deeplabv3_3d:
+#   Mode: "3D"
+#   Encoder_name: "resnet50"
+#   Encoder_weights: imagenet  # 3D models typically don't have imagenet weights
+#   Batch: 4
+#   Epochs: 100
+#   LR: 0.001
+#   Pixel_size: 96
+#   Workers: 2
