@@ -1,0 +1,190 @@
+# ======================= Classification Experiments =======================
+
+# ==========================================================================
+#                                  2D Models
+# ==========================================================================
+
+resnet18:
+  # Model Config
+  Mode: 2D
+  Weight: 18
+  # Training Config
+  Epochs: 120
+  Batch: 32
+  LR: 0.00005
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+resnet50:
+  # Model Config
+  Mode: 2D
+  Weight: 50
+  # Training Config
+  Epochs: 120
+  Batch: 24
+  LR: 0.00008
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+resnet152:
+  # Model Config
+  Mode: 2D
+  Weight: 152
+  # Training Config
+  Epochs: 150
+  Batch: 16
+  LR: 0.00006
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+efficientnetS:
+  # Model Config
+  Mode: 2D
+  Weight: S
+  # Training Config
+  Epochs: 120
+  Batch: 32
+  LR: 0.00005
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+efficientnetM:
+  # Model Config
+  Mode: 2D
+  Weight: M
+  # Training Config
+  Epochs: 130
+  Batch: 24
+  LR: 0.00007
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+efficientnetL:
+  # Model Config
+  Mode: 2D
+  Weight: L
+  # Training Config
+  Epochs: 150
+  Batch: 20
+  LR: 0.00006
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 2
+
+convnextS:
+  # Model Config
+  Mode: 2D
+  Weight: S
+  # Training Config
+  Epochs: 130
+  Batch: 24
+  LR: 0.00007
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+convnextM:
+  # Model Config
+  Mode: 2D
+  Weight: M
+  # Training Config
+  Epochs: 150
+  Batch: 20
+  LR: 0.00005
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+convnextL:
+  # Model Config
+  Mode: 2D
+  Weight: L
+  # Training Config
+  Epochs: 150
+  Batch: 16
+  LR: 0.00004
+  # Hardware Config
+  Pixel_size: 64
+  Workers: 4
+
+vitS:
+  # Model Config
+  Mode: 2D
+  Weight: S
+  # Training Config
+  Epochs: 150
+  Batch: 24
+  LR: 0.00008
+  # Hardware Config
+  Pixel_size: 224
+  Workers: 4
+
+vitM:
+  # Model Config
+  Mode: 2D
+  Weight: M
+  # Training Config
+  Epochs: 150
+  Batch: 12
+  LR: 0.00006
+  # Hardware Config
+  Pixel_size: 224
+  Workers: 2
+
+# ViT model with L weight cannot fit in GPU even with batch size 1
+# vitL:
+#   # Model Config
+#   Mode: 2D
+#   Weight: L
+#   # Training Config
+#   Epochs: 100
+#   Batch: 1
+#   LR: 0.0001
+#   # Hardware Config
+#   Pixel_size: 224
+#   Workers: 1
+
+pvtS:
+  # Model Config
+  Mode: 2D
+  Weight: S
+  # Training Config
+  Epochs: 130
+  Batch: 24
+  LR: 0.00008
+  # Hardware Config
+  Pixel_size: 224
+  Workers: 4
+
+pvtM:
+  # Model Config
+  Mode: 2D
+  Weight: M
+  # Training Config
+  Epochs: 150
+  Batch: 20
+  LR: 0.00005
+  # Hardware Config
+  Pixel_size: 224
+  Workers: 4
+
+pvtL:
+  # Model Config
+  Mode: 2D
+  Weight: L
+  # Training Config
+  Epochs: 150
+  Batch: 16
+  LR: 0.00006
+  # Hardware Config
+  Pixel_size: 224
+  Workers: 4
+
+# ==========================================================================
+#                                  3D Models
+# ==========================================================================
