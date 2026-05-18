@@ -2,7 +2,7 @@
 Predicted Masks Export Script: Foundation Models on LUNA16/LUNA25
 
 This script generates predicted masks from different foundation models
-(SAM2, SAM3, MedSAM2) for all nodules in selected scans and saves them individually
+(SAM2, SAM3, MedSAM2) and nnU-Net for all nodules in selected scans and saves them individually
 with the structure: {output_dir}/{scan}/{nodule_id}/{foundation_model}.png
 
 For LUNA16: Also saves ground truth masks as 'ground_truth.png'
@@ -39,7 +39,7 @@ from nodule_segmentation.foundation_models import utils
 from nodule_segmentation.foundation_models.models.medsam2_wrapper import MedSAM2Wrapper
 from nodule_segmentation.foundation_models.models.sam2_wrapper import SAM2Wrapper
 from nodule_segmentation.foundation_models.models.sam3_wrapper import SAM3Wrapper
-from nodule_segmentation.foundation_models.models.linknet_wrapper import LinkNetWrapper
+from nodule_segmentation.foundation_models.models.nnunet_wrapper import NNUNetWrapper
 
 # Configure logging
 logging.basicConfig(
@@ -70,8 +70,8 @@ SAM3_CHECKPOINT = config.SAM3_CHECKPOINT
 SAM3_CONFIG = config.SAM3_CONFIG
 SAM3_IMSIZE = config.SAM3_IMG_SIZE
 
-# LinkNet checkpoint (set to None to skip LinkNet)
-LINKNET_CHECKPOINT = "/workspace/code/lung-segmentation-tfm/results/best_model/segmentation/best_model_ever.pth"  # Update with path to your trained LinkNet checkpoint
+# nnU-Net checkpoint (set to None to skip nnU-Net)
+NNUNET_CHECKPOINT = "/workspace/code/lung-segmentation-tfm/results/best_model/segmentation/best_model_ever.pth"  # Path to trained nnU-Net checkpoint
 
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 THRESHOLD = config.THRESHOLD
@@ -95,62 +95,141 @@ DATASET_CONFIG = {
     },
 }
 
-# Model wrappers (global state)
-medsam2_wrapper = None
-sam2_wrapper = None
-sam3_wrapper = None
-linknet_wrapper = None
-
 # ============================================================================
-# MODEL INITIALIZATION
+# PATCH EXTRACTION
 # ============================================================================
 
-def init_wrappers(imsize: int):
-    """Initialize all model wrappers.
+def extract_64x64_patch(
+    slice_2d: np.ndarray,
+    center_y: int,
+    center_x: int,
+    patch_size: int = 64
+) -> tuple:
+    """
+    Extract a 64×64 patch centered at (center_y, center_x).
     
     Args:
-        imsize: Image size for preprocessing
-    """
-    global medsam2_wrapper, sam2_wrapper, sam3_wrapper, linknet_wrapper
-
-    logger.info("🤖 Initializing MedSAM2...")
-    medsam2_wrapper = MedSAM2Wrapper(
-        checkpoint_path=MEDSAM2_CHECKPOINT,
-        config_path=MEDSAM2_CONFIG,
-        device=DEVICE,
-        image_size=imsize
-    )
-
-    logger.info("🤖 Initializing SAM2...")
-    sam2_wrapper = SAM2Wrapper(
-        checkpoint_path=SAM2_CHECKPOINT,
-        config_path=SAM2_CONFIG,
-        device=DEVICE,
-        image_size=SAM2_IMSIZE
-    )
-
-    logger.info("🤖 Initializing SAM3...")
-    sam3_wrapper = SAM3Wrapper(
-        checkpoint_path=SAM3_CHECKPOINT,
-        config_path=SAM3_CONFIG,
-        device=DEVICE,
-        image_size=SAM3_IMSIZE
-    )
+        slice_2d: 2D slice (H, W)
+        center_y: Y coordinate of center
+        center_x: X coordinate of center
+        patch_size: Size of patch (default 64)
     
-    # Initialize LinkNet if checkpoint is provided
-    if LINKNET_CHECKPOINT and os.path.exists(LINKNET_CHECKPOINT):
-        logger.info("🤖 Initializing LinkNet (64×64 patches)...")
-        linknet_wrapper = LinkNetWrapper(
-            checkpoint_path=LINKNET_CHECKPOINT,
-            device=DEVICE,
-            patch_size=64
+    Returns:
+        Tuple of (patch, new_center_y, new_center_x, y_start, x_start)
+        - patch: Extracted patch (patch_size, patch_size)
+        - new_center_y: Center Y in patch coordinates
+        - new_center_x: Center X in patch coordinates
+        - y_start: Starting Y coordinate in original image
+        - x_start: Starting X coordinate in original image
+    """
+    half_size = patch_size // 2
+    h, w = slice_2d.shape
+    
+    # Calculate patch bounds
+    y_start = max(0, center_y - half_size)
+    y_end = min(h, center_y + half_size)
+    x_start = max(0, center_x - half_size)
+    x_end = min(w, center_x + half_size)
+    
+    # Extract patch
+    patch = slice_2d[y_start:y_end, x_start:x_end]
+    
+    # Pad if necessary (when near borders)
+    if patch.shape[0] < patch_size or patch.shape[1] < patch_size:
+        pad_h = patch_size - patch.shape[0]
+        pad_w = patch_size - patch.shape[1]
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        
+        patch = np.pad(
+            patch,
+            ((pad_top, pad_bottom), (pad_left, pad_right)),
+            mode='constant',
+            constant_values=slice_2d.min()
         )
-    else:
-        if LINKNET_CHECKPOINT:
-            logger.warning(f"⚠️  LinkNet checkpoint not found: {LINKNET_CHECKPOINT}")
-        linknet_wrapper = None
+    
+    # Calculate new center in patch coordinates
+    new_center_y = center_y - y_start
+    new_center_x = center_x - x_start
+    
+    # Adjust if padding was applied
+    if patch.shape[0] != (y_end - y_start) or patch.shape[1] != (x_end - x_start):
+        pad_top = (patch_size - (y_end - y_start)) // 2
+        pad_left = (patch_size - (x_end - x_start)) // 2
+        new_center_y += pad_top
+        new_center_x += pad_left
+    
+    return patch, new_center_y, new_center_x, y_start, x_start
 
-    logger.info("✅ All models initialized\n")
+
+# ============================================================================
+# MODEL INITIALIZATION (ON-DEMAND)
+# ============================================================================
+
+def init_model_on_demand(model_name: str, imsize: int):
+    """Initialize a single model on demand to save memory.
+    
+    Args:
+        model_name: Name of model to initialize ("medsam2", "sam2", "sam3", "nnunet")
+        imsize: Image size for preprocessing
+        
+    Returns:
+        Initialized model wrapper
+    """
+    if model_name == "medsam2":
+        logger.info("🤖 Initializing MedSAM2...")
+        wrapper = MedSAM2Wrapper(
+            checkpoint_path=MEDSAM2_CHECKPOINT,
+            config_path=MEDSAM2_CONFIG,
+            device=DEVICE,
+            image_size=imsize
+        )
+    elif model_name == "sam2":
+        logger.info("🤖 Initializing SAM2...")
+        wrapper = SAM2Wrapper(
+            checkpoint_path=SAM2_CHECKPOINT,
+            config_path=SAM2_CONFIG,
+            device=DEVICE,
+            image_size=SAM2_IMSIZE
+        )
+    elif model_name == "sam3":
+        logger.info("🤖 Initializing SAM3...")
+        wrapper = SAM3Wrapper(
+            checkpoint_path=SAM3_CHECKPOINT,
+            config_path=SAM3_CONFIG,
+            device=DEVICE,
+            image_size=SAM3_IMSIZE
+        )
+    elif model_name == "nnunet":
+        if NNUNET_CHECKPOINT and os.path.exists(NNUNET_CHECKPOINT):
+            logger.info("🤖 Initializing nnU-Net (64×64 patches)...")
+            wrapper = NNUNetWrapper(
+                checkpoint_path=NNUNET_CHECKPOINT,
+                device=DEVICE,
+                patch_size=64
+            )
+        else:
+            logger.warning(f"⚠️  nnU-Net checkpoint not found: {NNUNET_CHECKPOINT}")
+            wrapper = None
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+    
+    return wrapper
+
+
+def cleanup_model(wrapper):
+    """Free memory from a model wrapper.
+    
+    Args:
+        wrapper: Model wrapper to cleanup
+    """
+    if wrapper is not None:
+        del wrapper
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
 
 
 def load_and_preprocess_nodule(scan_uid: str, centroid_list, bbox_coords, 
@@ -240,24 +319,48 @@ def load_and_preprocess_nodule(scan_uid: str, centroid_list, bbox_coords,
         # Determine windowing
         nodule_type, window_level, window_width = utils.determine_nodule_type_and_windowing(hu_at_centroid)
 
-        # Extract single slice
-        img_single_slice = img_3d[centroid_z:centroid_z+1]  # (1, H, W)
-
+        # Extract single slice (FULL SLICE for foundation models)
+        img_single_slice_full = img_3d[centroid_z]  # (H, W)
+        
+        # Extract 64×64 patch around nodule centroid (ONLY for nnU-Net)
+        img_patch, patch_center_y, patch_center_x, y_start, x_start = extract_64x64_patch(
+            img_single_slice_full,
+            centroid_y,
+            centroid_x,
+            patch_size=64
+        )
+        
+        # Extract GT mask patch if available
+        mask_gt_patch = None
+        if mask_gt_slice is not None:
+            mask_gt_patch, _, _, _, _ = extract_64x64_patch(
+                mask_gt_slice,
+                centroid_y,
+                centroid_x,
+                patch_size=64
+            )
+        
         # World matrix for coordinate transformations (3x3, not 4x4)
         world_matrix = np.eye(3)
 
         return {
             'scan_uid': scan_uid,
-            'img_single_slice': img_single_slice,
-            'mask_gt_slice': mask_gt_slice,
+            'img_single_slice_full': img_single_slice_full,  # Full slice for foundation models (H, W)
+            'img_patch': img_patch,  # 64×64 patch for nnU-Net and visualization
+            'mask_gt_slice_full': mask_gt_slice,  # Full GT mask (H, W)
+            'mask_gt_patch': mask_gt_patch,  # 64×64 GT patch for visualization
             'centroid_z': centroid_z,
-            'centroid_y': centroid_y,
-            'centroid_x': centroid_x,
+            'centroid_y': centroid_y,  # Original coordinates in full image
+            'centroid_x': centroid_x,  # Original coordinates in full image
+            'patch_center_y': patch_center_y,  # Center in patch coordinates
+            'patch_center_x': patch_center_x,  # Center in patch coordinates
+            'patch_offset_y': y_start,  # Patch offset in original image
+            'patch_offset_x': x_start,  # Patch offset in original image
             'bbox_2d': bbox_2d,
             'window_level': window_level,
             'window_width': window_width,
             'nodule_type': nodule_type,
-            # For LinkNet: 3D data and coordinate system info
+            # For nnU-Net: 3D data and coordinate system info
             'ct_3d': img_3d,
             'voxel_origin': voxel_origin,
             'world_matrix': world_matrix,
@@ -274,26 +377,38 @@ def load_and_preprocess_nodule(scan_uid: str, centroid_list, bbox_coords,
 # ============================================================================
 
 @torch.inference_mode()
-def get_model_predictions(nodule_data: Dict) -> Dict:
+def get_model_predictions(nodule_data: Dict, imsize: int) -> Dict:
     """Get predictions from all models for a nodule.
     
-    Includes foundation models (MedSAM2, SAM2, SAM3) and custom LinkNet (if available).
-    LinkNet uses 64×64 patches extracted from the center, while fundational models use 512×512.
+    Foundation models (MedSAM2, SAM2, SAM3) use FULL slice for context.
+    nnU-Net uses 64×64 patch (as it was trained).
+    Models are loaded one at a time to avoid OOM errors.
+    
+    Args:
+        nodule_data: Dictionary with nodule data
+        imsize: Image size for model initialization
+    
+    Returns:
+        Dictionary with predictions from all models
     """
-    global medsam2_wrapper, sam2_wrapper, sam3_wrapper, linknet_wrapper
-
     predictions = {}
 
-    img_single_slice = nodule_data['img_single_slice']
-    centroid_y = nodule_data['centroid_y']
-    centroid_x = nodule_data['centroid_x']
+    # Foundation models use FULL slice
+    img_single_slice_full = nodule_data['img_single_slice_full']  # (H, W) - typically ~512×512
+    centroid_y = nodule_data['centroid_y']  # Coordinates in full image
+    centroid_x = nodule_data['centroid_x']  # Coordinates in full image
     centroid_z = nodule_data['centroid_z']
     bbox_2d = nodule_data['bbox_2d']
     window_level = nodule_data['window_level']
     window_width = nodule_data['window_width']
+    
+    # Convert full slice to (1, H, W) format for foundation model wrappers
+    img_single_slice = img_single_slice_full[np.newaxis, ...]  # (1, H, W)
 
-    # MedSAM2 (point-based prompt - centroid only, no bbox)
+    # MedSAM2 (point-based prompt - using FULL IMAGE coordinates)
+    medsam2_wrapper = None
     try:
+        medsam2_wrapper = init_model_on_demand("medsam2", imsize)
         img_tensor, video_height, video_width = medsam2_wrapper.preprocess_image(
             img_single_slice, window_level=window_level, window_width=window_width
         )
@@ -302,20 +417,32 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
             video_height=video_height,
             video_width=video_width,
             centroid_z=0,
-            centroid_y=centroid_y,
-            centroid_x=centroid_x,
+            centroid_y=centroid_y,  # Full image coordinates
+            centroid_x=centroid_x,  # Full image coordinates
             bbox=None,
             confidence_threshold=THRESHOLD,
             z_range=None
         )
-        predictions['medsam2'] = pred_mask_3d[0]  # Extract slice
-        torch.cuda.empty_cache()
+        # Extract full prediction and crop to 64×64 patch around nodule
+        pred_mask_full = pred_mask_3d[0]  # Full prediction (H, W)
+        # Extract 64×64 patch from prediction
+        pred_mask_patch, _, _, _, _ = extract_64x64_patch(
+            pred_mask_full,
+            centroid_y,
+            centroid_x,
+            patch_size=64
+        )
+        predictions['medsam2'] = pred_mask_patch  # 64×64 patch
     except Exception as e:
         logger.warning(f"  ⚠️  MedSAM2 failed: {e}")
         predictions['medsam2'] = None
+    finally:
+        cleanup_model(medsam2_wrapper)
 
-    # SAM2 (point-based prompt - centroid only, no bbox)
+    # SAM2 (point-based prompt - using FULL IMAGE coordinates)
+    sam2_wrapper = None
     try:
+        sam2_wrapper = init_model_on_demand("sam2", imsize)
         img_tensor, video_height, video_width = sam2_wrapper.preprocess_image(
             img_single_slice, window_level=window_level, window_width=window_width
         )
@@ -324,20 +451,33 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
             video_height=video_height,
             video_width=video_width,
             centroid_z=0,
-            centroid_y=centroid_y,
-            centroid_x=centroid_x,
+            centroid_y=centroid_y,  # Full image coordinates
+            centroid_x=centroid_x,  # Full image coordinates
             bbox=None,
             confidence_threshold=THRESHOLD,
             z_range=(0, 0)
         )
-        predictions['sam2'] = pred_mask_3d[0]  # Extract slice
-        torch.cuda.empty_cache()
+        # Extract full prediction and crop to 64×64 patch around nodule
+        pred_mask_full = pred_mask_3d[0]  # Full prediction (H, W)
+        # Extract 64×64 patch from prediction
+        pred_mask_patch, _, _, _, _ = extract_64x64_patch(
+            pred_mask_full,
+            centroid_y,
+            centroid_x,
+            patch_size=64
+        )
+        predictions['sam2'] = pred_mask_patch  # 64×64 patch
     except Exception as e:
         logger.warning(f"  ⚠️  SAM2 failed: {e}")
         predictions['sam2'] = None
+    finally:
+        cleanup_model(sam2_wrapper)
 
-    # SAM3 (requires bbox - point prompts not supported in SAM3)
+    # SAM3 (requires bbox - using FULL IMAGE coordinates)
+    sam3_wrapper = None
     try:
+        sam3_wrapper = init_model_on_demand("sam3", imsize)
+        
         img_array, video_height, video_width = sam3_wrapper.preprocess_image(
             img_single_slice, window_level=window_level, window_width=window_width
         )
@@ -346,22 +486,34 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
             video_height=video_height,
             video_width=video_width,
             centroid_z=0,
-            centroid_y=centroid_y,
-            centroid_x=centroid_x,
-            bbox=bbox_2d,
+            centroid_y=centroid_y,  # Full image coordinates
+            centroid_x=centroid_x,  # Full image coordinates
+            bbox=bbox_2d,  # Full image bbox
             confidence_threshold=THRESHOLD,
             z_range=(0, 0)
         )
-        predictions['sam3'] = pred_mask_3d[0]  # Extract slice
-        torch.cuda.empty_cache()
+        # Extract full prediction and crop to 64×64 patch around nodule
+        pred_mask_full = pred_mask_3d[0]  # Full prediction (H, W)
+        # Extract 64×64 patch from prediction
+        pred_mask_patch, _, _, _, _ = extract_64x64_patch(
+            pred_mask_full,
+            centroid_y,
+            centroid_x,
+            patch_size=64
+        )
+        predictions['sam3'] = pred_mask_patch  # 64×64 patch
     except Exception as e:
         logger.warning(f"  ⚠️  SAM3 failed: {e}")
         predictions['sam3'] = None
+    finally:
+        cleanup_model(sam3_wrapper)
 
-    # LinkNet (64×64 patch-based model)
-    if linknet_wrapper is not None:
-        try:
-            # LinkNet needs the full 3D CT volume for patch extraction
+    # nnU-Net (64×64 patch-based model - already returns 64×64)
+    nnunet_wrapper = None
+    try:
+        nnunet_wrapper = init_model_on_demand("nnunet", imsize)
+        if nnunet_wrapper is not None:
+            # nnU-Net needs the full 3D CT volume for patch extraction
             # Get it from nodule_data if available
             if 'ct_3d' in nodule_data and 'voxel_origin' in nodule_data:
                 ct_3d = nodule_data['ct_3d']
@@ -369,7 +521,7 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
                 world_matrix = nodule_data['world_matrix']
                 voxel_spacing = nodule_data['voxel_spacing']
                 
-                pred_mask = linknet_wrapper.predict(
+                pred_mask = nnunet_wrapper.predict(
                     ct_3d=ct_3d,
                     centroid_y=centroid_y,
                     centroid_x=centroid_x,
@@ -380,24 +532,19 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
                     src_voxel_spacing=voxel_spacing,
                     confidence_threshold=THRESHOLD,
                 )
-                # LinkNet returns (1, 64, 64), need to resize to 512×512 for consistency
-                linknet_mask = pred_mask[0]  # Extract from (1, H, W) -> (H, W)
-                
-                # Resize from 64×64 to 512×512 using bilinear interpolation
-                if linknet_mask.shape != (512, 512):
-                    linknet_mask = cv2.resize(linknet_mask.astype(np.float32), (512, 512), 
-                                              interpolation=cv2.INTER_LINEAR)
-                
-                predictions['linknet'] = linknet_mask
+                # nnU-Net returns (1, 64, 64), keep at 64×64
+                nnunet_mask = pred_mask[0]  # Extract from (1, H, W) -> (H, W)
+                predictions['nnunet'] = nnunet_mask
             else:
-                logger.warning(f"  ⚠️  LinkNet: Missing CT volume data, skipping")
-                predictions['linknet'] = None
-            torch.cuda.empty_cache()
-        except Exception as e:
-            logger.warning(f"  ⚠️  LinkNet failed: {e}")
-            predictions['linknet'] = None
-    else:
-        predictions['linknet'] = None
+                logger.warning(f"  ⚠️  nnU-Net: Missing CT volume data, skipping")
+                predictions['nnunet'] = None
+        else:
+            predictions['nnunet'] = None
+    except Exception as e:
+        logger.warning(f"  ⚠️  nnU-Net failed: {e}")
+        predictions['nnunet'] = None
+    finally:
+        cleanup_model(nnunet_wrapper)
 
     return predictions
 
@@ -408,10 +555,10 @@ def get_model_predictions(nodule_data: Dict) -> Dict:
 
 def save_mask_to_file(mask: Optional[np.ndarray], output_path: Path, 
                       color_rgb: tuple = (1.0, 1.0, 1.0)) -> bool:
-    """Save a single mask as a colored image file.
+    """Save a single mask as a colored image file (64×64).
     
     Args:
-        mask: Segmentation mask (2D binary array or None)
+        mask: Segmentation mask (2D binary array or None, 64×64)
         output_path: Path where to save the mask image
         color_rgb: RGB color tuple (r, g, b) in [0, 1] range
         
@@ -420,8 +567,8 @@ def save_mask_to_file(mask: Optional[np.ndarray], output_path: Path,
     """
     try:
         if mask is None:
-            # Save empty mask (black background)
-            empty_mask = np.zeros((512, 512, 3), dtype=np.uint8)
+            # Save empty mask (black background) 64×64
+            empty_mask = np.zeros((64, 64, 3), dtype=np.uint8)
             plt.imsave(output_path, empty_mask)
         else:
             # Create colored mask: white areas for mask > 0, black elsewhere
@@ -470,7 +617,7 @@ def save_nodule_predictions(dataset_name: str, scan_uid: str, nodule_idx: int,
         'medsam2': (1.0, 0.0, 0.0),  # Red
         'sam2': (0.0, 1.0, 0.0),     # Green
         'sam3': (0.0, 0.0, 1.0),     # Blue
-        'linknet': (0.0, 1.0, 1.0),  # Cyan
+        'nnunet': (0.0, 1.0, 1.0),   # Cyan
     }
     
     success = True
@@ -497,14 +644,14 @@ def save_nodule_predictions(dataset_name: str, scan_uid: str, nodule_idx: int,
 
 
 def save_original_ct_image(dataset_name: str, scan_uid: str, nodule_idx: int, 
-                          img_single_slice: np.ndarray) -> bool:
-    """Save the original CT image for a specific nodule slice.
+                          img_patch: np.ndarray) -> bool:
+    """Save the original CT patch (64×64) for a specific nodule.
     
     Args:
         dataset_name: Dataset name ('LUNA16' or 'LUNA25')
         scan_uid: Scan UID
         nodule_idx: Nodule index within the scan
-        img_single_slice: Single CT slice (1, H, W)
+        img_patch: CT patch (64, 64)
         
     Returns:
         True if saved successfully, False otherwise
@@ -518,8 +665,7 @@ def save_original_ct_image(dataset_name: str, scan_uid: str, nodule_idx: int,
         output_path = nodule_dir / "original.png"
         
         # Normalize to [0, 1] and convert to uint8
-        img_slice = img_single_slice[0]  # Extract from (1, H, W) -> (H, W)
-        img_norm = img_slice.astype(np.float32)
+        img_norm = img_patch.astype(np.float32)
         img_min = img_norm.min()
         img_max = img_norm.max()
         
@@ -759,10 +905,11 @@ def main():
         logger.info(f"   Images: {imgs_path}")
         if has_gt:
             logger.info(f"   GT Masks: {masks_path}")
-        logger.info(f"   Annotations: {annotations_csv}\n")
+        logger.info(f"   Annotations: {annotations_csv}")
+        logger.info(f"   Image size: {imsize}x{imsize}\n")
         
-        # Initialize models for this dataset
-        init_wrappers(imsize=imsize)
+        # Models will be initialized on-demand to save memory
+        logger.info("ℹ️  Models will be loaded one at a time to save GPU memory\n")
 
         # Load annotations
         logger.info(f"📋 Loading annotations...")
@@ -854,15 +1001,15 @@ def main():
                     failed_nodules += 1
                     continue
 
-                # Get predictions
-                predictions = get_model_predictions(nodule_data)
+                # Get predictions (models loaded on-demand)
+                predictions = get_model_predictions(nodule_data, imsize)
 
-                # Save original CT image for this nodule's slice
-                save_original_ct_image(dataset_name, scan_uid, nodule_idx, nodule_data['img_single_slice'])
+                # Save original CT patch (64×64)
+                save_original_ct_image(dataset_name, scan_uid, nodule_idx, nodule_data['img_patch'])
 
                 # Save predictions
-                mask_gt = nodule_data.get('mask_gt_slice') if has_gt else None
-                if save_nodule_predictions(dataset_name, scan_uid, nodule_idx, predictions, mask_gt=mask_gt):
+                mask_gt_patch = nodule_data.get('mask_gt_patch') if has_gt else None
+                if save_nodule_predictions(dataset_name, scan_uid, nodule_idx, predictions, mask_gt=mask_gt_patch):
                     processed_nodules += 1
                 else:
                     failed_nodules += 1
